@@ -1,71 +1,72 @@
 from flask import Flask, request, jsonify
 import requests
-import base64
+import openai
 import os
+import base64
 
+# Initialize Flask app
 app = Flask(__name__)
 
-# ===============================
-# 🔐 OpenAI API Key (set this in Replit Secrets)
-# ===============================
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Add it in Secrets tab
+# Set your OpenAI key from environment variable
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ===============================
-# 🔧 Helper function to send to OpenAI
-# ===============================
-def analyze_image_with_openai(image_b64):
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "online",
+        "message": "✅ Flask proxy is running and ready for ESP32 requests!"
+    })
 
-    data = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Describe this image in one short sentence."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+@app.route("/process", methods=["POST"])
+def process():
+    try:
+        data = request.get_json()
+
+        # Handle text or image input
+        user_text = data.get("text")
+        image_data = data.get("image")
+
+        if not user_text and not image_data:
+            return jsonify({"error": "Missing text or image data"}), 400
+
+        # --- If text provided ---
+        if user_text:
+            completion = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant inside a calculator. Keep responses short and clear."},
+                    {"role": "user", "content": user_text}
                 ]
-            }
-        ]
-    }
+            )
+            response_text = completion.choices[0].message["content"]
+            return jsonify({"response": response_text}), 200
 
-    try:
-        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data)
-        res.raise_for_status()
-        reply = res.json()
-        message = reply["choices"][0]["message"]["content"]
-        return message
+        # --- If image provided (base64 encoded) ---
+        if image_data:
+            image_bytes = base64.b64decode(image_data)
+            image_path = "/tmp/input.jpg"
+            with open(image_path, "wb") as f:
+                f.write(image_bytes)
+
+            # Call OpenAI Vision model
+            vision_response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Describe or solve what’s in this image."},
+                        {"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_data}"}
+                    ]}
+                ]
+            )
+
+            vision_text = vision_response.choices[0].message["content"]
+            return jsonify({"response": vision_text}), 200
+
     except Exception as e:
-        print("❌ Error communicating with OpenAI:", e)
-        return "Error contacting OpenAI."
-
-# ===============================
-# 🌐 Flask endpoint
-# ===============================
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    try:
-        img_data = request.json.get("image_b64")
-        if not img_data:
-            return jsonify({"error": "No image data provided"}), 400
-
-        result = analyze_image_with_openai(img_data)
-        return jsonify({"result": result})
-    except Exception as e:
+        print("Error:", e)
         return jsonify({"error": str(e)}), 500
 
-# ===============================
-# 🧠 Root route (test connection)
-# ===============================
-@app.route('/')
-def index():
-    return "✅ Replit OpenAI Proxy is running!"
 
-# ===============================
-# 🚀 Start server
-# ===============================
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+# Run locally (Render ignores this, gunicorn handles it)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
